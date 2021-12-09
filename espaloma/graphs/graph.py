@@ -55,6 +55,14 @@ class Graph(BaseGraph):
 
             mol = Molecule.from_smiles(mol, allow_undefined_stereo=True)
 
+        if mol is not None and not isinstance(mol, openff.toolkit.topology.Molecule):
+            import rdkit
+            if isinstance(mol,rdkit.Chem.rdchem.Mol):
+                from openff.toolkit.topology import Molecule
+                mol = Molecule.from_rdkit(mol)
+        if mol is not None:
+            assert isinstance(mol, openff.toolkit.topology.Molecule ), "mol can only be OFF Molecule object."
+
         if mol is not None and homograph is None and heterograph is None:
             homograph = self.get_homograph_from_mol(mol)
 
@@ -71,7 +79,11 @@ class Graph(BaseGraph):
         import os
         import json
         import dgl
-        os.mkdir(path)
+        from pathlib import Path
+
+        folderpath = Path(path)
+        if not folderpath.exists():
+            folderpath.mkdir()
         dgl.save_graphs(path + "/homograph.bin", [self.homograph])
         dgl.save_graphs(path + "/heterograph.bin", [self.heterograph])
         with open(path + "/mol.json", "w") as f_handle:
@@ -79,21 +91,53 @@ class Graph(BaseGraph):
 
     @classmethod
     def load(cls, path):
-        import json
-        import dgl
-
-        homograph = dgl.load_graphs(path + "/homograph.bin")[0][0]
-        heterograph = dgl.load_graphs(path + "/heterograph.bin")[0][0]
-
-        with open(path + "/mol.json", "r") as f_handle:
-            mol = json.load(f_handle)
         from openff.toolkit.topology import Molecule
+        from pathlib import Path
+        json_file = None
+        homograph_file = None
+        heterograph_file = None
+        mol_file = None
+        mol = None
 
-        try:
-            mol = Molecule.from_json(mol)
-        except:
-            mol = Molecule.from_dict(mol)
-        return cls(mol=mol, homograph=homograph, heterograph=heterograph)
+        folderpath = Path(path)
+        for f in folderpath.glob("*"):
+            if f.suffix == ".json":
+                assert json_file is None, "Multiple .json files found. Use a folder for each sample"
+                json_file = f
+            elif f.suffix == ".bin":
+                if "homograph" in f.name:
+                    homograph_file = f
+                elif "heterograph" in f.name:
+                    heterograph_file = f
+            elif f.suffix == ".mol":
+                assert mol_file is None, "Multiple .mol files found. Use a folder for each sample"
+                mol_file = f
+
+        if json_file is not None:
+            import json
+
+            with open(path + "/mol.json", "r") as f_handle:
+                mol = json.load(f_handle)
+            try:
+                mol = Molecule.from_json(mol)
+            except:
+                mol = Molecule.from_dict(mol)
+        elif mol_file is not None:
+            from rdkit import Chem
+
+            rdmol = Chem.MolFromMolFile(mol_file)
+            mol = Molecule.from_rdkit(rdmol)
+        else:
+            assert mol is not None, "No molecule data found. Need OFF .json or rdkit .mol"
+        if homograph_file is None or heterograph_file is None:
+            inst =  cls(mol=mol,homograph=None,heterograph=None)
+            inst.save(path)
+            return inst
+        else:
+            import dgl
+            homograph = dgl.load_graphs(path + "/homograph.bin")[0][0]
+            heterograph = dgl.load_graphs(path + "/heterograph.bin")[0][0]
+            return cls(mol=mol, homograph=homograph, heterograph=heterograph)
 
     @staticmethod
     def get_homograph_from_mol(mol):
